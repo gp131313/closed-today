@@ -90,6 +90,37 @@ def _session_intervals(session_ids):
     return out
 
 
+def _manual_closed(session_ids):
+    """{id: bool} — сессия всё ещё закрыта вручную (archived=1, auto=0).
+
+    Нужен, чтобы восстановленный из архива чат исчезал из панели сразу, не
+    дожидаясь прогона скрипта журнала.
+    """
+    if not session_ids:
+        return {}
+    out: dict[str, bool] = {}
+    try:
+        import sqlite3
+
+        path = _home() / "state.db"
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except Exception:
+        return {}
+    try:
+        marks = ",".join("?" * len(session_ids))
+        rows = conn.execute(
+            f"SELECT id, archived, auto_archived FROM sessions WHERE id IN ({marks})",
+            tuple(session_ids),
+        ).fetchall()
+        for sid, archived, auto in rows:
+            out[sid] = bool(archived) and not bool(auto)
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+    return out
+
+
 def _parents(session_ids):
     """{id: (parent_id, parent_title)} — кто чей форк/продолжение."""
     if not session_ids:
@@ -151,9 +182,15 @@ def closed_days(days: int = 7) -> dict:
     today = datetime.datetime.now(MSK).date()
     first = today - datetime.timedelta(days=days - 1)
 
+    journal = _load_journal()
+    live = _manual_closed(list(journal))
+
     buckets: dict[datetime.date, list] = {}
-    for session_id, entry in _load_journal().items():
+    for session_id, entry in journal.items():
         if not isinstance(entry, dict) or entry.get("reopened"):
+            continue
+        # Если сессия ещё в базе, но уже не в ручном архиве — её вернули.
+        if live.get(session_id) is False:
             continue
         dt = _parse(entry)
         if dt is None or dt.date() < first or dt.date() > today:

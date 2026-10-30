@@ -140,7 +140,7 @@ function sparkle(node, index) {
   )
 }
 
-function DayRow({ item, onRename, fresh, showSummary, showEmoji, main, showHours, depth = 0, parentTitle = '' }) {
+function DayRow({ item, onRename, onRestore, fresh, showSummary, showEmoji, main, showHours, depth = 0, parentTitle = '' }) {
   const [draft, setDraft] = useState(null) // null = не редактируем
   const [busy, setBusy] = useState(false)
   const [party, setParty] = useState(false)
@@ -312,13 +312,36 @@ function DayRow({ item, onRename, fresh, showSummary, showEmoji, main, showHours
     )
   }
 
-  return jsxs('div', {
+  const row = jsxs('div', {
     className: cn(
       'relative flex w-full flex-col rounded-md px-1 py-0.5',
       depth > 0 && 'pl-4'
     ),
     ref: rowRef,
     children: lines
+  })
+
+  // Правый клик по задаче: открыть, переименовать, вернуть из архива.
+  return jsxs(ContextMenu, {
+    children: [
+      jsx(ContextMenuTrigger, {
+        asChild: true,
+        // Меню задачи важнее меню настроек панели: не даём событию всплыть.
+        onContextMenu: event => event.stopPropagation(),
+        children: row
+      }),
+      jsxs(ContextMenuContent, {
+        children: [
+          jsx(ContextMenuItem, { onSelect: () => openChat(item.id), children: 'Открыть чат' }),
+          jsx(ContextMenuItem, { onSelect: () => setDraft(item.title), children: 'Переименовать' }),
+          jsx(ContextMenuSeparator, {}),
+          jsx(ContextMenuItem, {
+            onSelect: () => void onRestore(item),
+            children: 'Восстановить из архива'
+          })
+        ]
+      })
+    ]
   })
 }
 
@@ -352,7 +375,7 @@ function withStructure(items) {
   return out
 }
 
-function DayGroup({ day, onRename, freshIds, showSummary, showEmoji, main, showHours }) {
+function DayGroup({ day, onRename, onRestore, freshIds, showSummary, showEmoji, main, showHours }) {
   const empty = !day.count
   const hours = showHours ? hoursLabel(day.hours) : ''
   return jsxs('div', {
@@ -394,6 +417,7 @@ function DayGroup({ day, onRename, freshIds, showSummary, showEmoji, main, showH
               key: entry.item.id,
               main,
               onRename,
+              onRestore,
               parentTitle: entry.parentTitle,
               showEmoji,
               showHours,
@@ -505,6 +529,25 @@ function ClosedTodayPane() {
     return rename.mutateAsync({ id: item.id, title })
   }
 
+  // Восстановление из архива: строка уходит сразу, журнал подчистится сам
+  // (скрипт помечает разархивированный чат как reopened).
+  const [hideIds, setHideIds] = useState(() => new Set())
+  const restore = useMutation({
+    mutationFn: ({ id }) => host.request('session.archive', { session_id: id, archived: false }),
+    onError: error => {
+      host.notify({
+        kind: 'error',
+        message: `Не удалось восстановить: ${(error && error.message) || error}`
+      })
+    },
+    onSuccess: (_result, variables) => {
+      setHideIds(prev => new Set(prev).add(variables.id))
+      host.notify({ kind: 'success', message: 'Задача восстановлена из архива' })
+      void queryClient.invalidateQueries({ queryKey: QUERY_ROOT })
+    }
+  })
+  const onRestore = item => restore.mutateAsync({ id: item.id })
+
   const data = query.data || {}
   const { lines, emoji1, main: mainMode, hours: hoursOn } = useValue(prefs)
   const showSummary = lines !== '1'
@@ -512,12 +555,18 @@ function ClosedTodayPane() {
   const showHours = hoursOn !== false
   const main = mainMode === 'title' ? 'title' : 'summary'
   const todayKey = data.today
-  const days = (data.days || []).slice()
+  let days = (data.days || []).slice()
   const todayCount = data.today_count || 0
   // Сегодняшний день показываем всегда — вкладка «Сегодня» и «7 дней» должны
   // включать сегодняшний день, даже когда закрывать было нечего.
   if (todayKey && !days.some(day => day.date === todayKey)) {
     days.unshift({ date: todayKey, label: 'Сегодня', count: 0, items: [] })
+  }
+  if (hideIds.size) {
+    days = days.map(day => {
+      const kept = (day.items || []).filter(item => !hideIds.has(item.id))
+      return { ...day, items: kept, count: kept.length }
+    })
   }
 
   // Кто появился с прошлого показа — тем и достаётся анимация.
@@ -594,6 +643,7 @@ function ClosedTodayPane() {
           key: day.date,
           main,
           onRename,
+          onRestore,
           showEmoji,
           showHours,
           showSummary
@@ -602,11 +652,14 @@ function ClosedTodayPane() {
     })
   }
 
-  return jsx(PaneMenu, {
-    children: jsxs('div', {
-      className: 'flex h-full min-h-0 flex-col',
-      children: [head, jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body })]
-    })
+  // Меню настроек — только на шапке панели: правый клик по задаче открывает
+  // меню самой задачи, и два меню не спорят за одно событие.
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col',
+    children: [
+      jsx(PaneMenu, { children: head }),
+      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body })
+    ]
   })
 }
 
@@ -688,7 +741,7 @@ function SettingsPage() {
       jsx('div', {
         className: 'text-xs text-(--ui-text-quaternary)',
         children:
-          'Правый клик по панели — те же переключатели. Клик по строке — переименовать задачу, Ctrl-клик — открыть чат. Только что закрытая задача въезжает с искрами ✨'
+          'Клик по строке — переименовать, Ctrl-клик — открыть чат, правый клик — меню задачи (в т.ч. вернуть из архива). Правый клик по панели — переключатели. Закрытая задача въезжает с искрами ✨'
       })
     ]
   })
@@ -698,6 +751,7 @@ export default {
   id: ID, // совпадает с именем папки
   name: 'Закрыто за день',
   register(ctx) {
+    console.log('[closed-today] build restore-menu 2026-10-30')
     rest = ctx.rest
     activeCtx = ctx
     loadPrefs(ctx)

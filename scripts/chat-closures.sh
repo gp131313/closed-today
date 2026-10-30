@@ -263,9 +263,14 @@ def scan(log):
         changed += 1
     for sid in list(log):
         if sid not in seen:
-            log[sid]["reopened"] = True  # чат разархивировали — из сводки уходит
+            # Чат разархивировали — из сводки уходит. Поднимаем changed, иначе
+            # пометка останется в памяти и не попадёт в файл.
+            if not log[sid].get("reopened"):
+                log[sid]["reopened"] = True
+                changed += 1
         elif log[sid].get("reopened"):
             log[sid].pop("reopened", None)
+            changed += 1
     if changed:
         save_log(log)
     return changed
