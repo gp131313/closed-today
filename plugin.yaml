@@ -1,0 +1,6 @@
+name: closed-today
+version: 1.0.0
+manifest_version: 2
+license: MIT
+description: Закрытые за день задачи (чаты) — журнал закрытий и панель в десктоп-приложении.
+tags: [desktop, sessions, journal]
